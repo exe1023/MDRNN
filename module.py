@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.autograd import Variable
 from rnn import MDGRU
 
@@ -11,8 +12,9 @@ class RNN(nn.Module):
     '''
     def __init__(self, 
                  input_size, 
-                 hidden_size, 
-                 dropout = 0,
+                 hidden_size,
+                 layer_norm=False, 
+                 dropout=0,
                  rnn_type='gru'):
         super(RNN, self).__init__()
         # these two paramters are now fixed (not implemented),
@@ -23,11 +25,10 @@ class RNN(nn.Module):
         self.hidden_size = hidden_size
         self.rnn_type = rnn_type
         if rnn_type == 'gru':
-            self.rnn = MDGRU(input_size, hidden_size)
+            self.rnn = MDGRU(input_size, hidden_size, layer_norm)
         elif rnn_type =='lstm':
             self.rnn = nn.LSTM(input_size, 
                                hidden_size, 
-                               batch_first=True,
                                dropout=dropout)
         else:
             print('Unexpected rnn type')
@@ -52,11 +53,12 @@ class MDRNN(nn.Module):
                  input_size=1,
                  hidden_size=25,
                  output_size=10,
+                 layer_norm=False,
                  axis=4):
         super(MDRNN, self).__init__()
         rnns = []
         for _ in range(axis):
-            rnns.append(RNN(input_size, hidden_size))
+            rnns.append(RNN(input_size, hidden_size, layer_norm=layer_norm))
         self.rnns = nn.ModuleList(rnns)
         self.output = nn.Linear(hidden_size * len(self.rnns), output_size)
     
@@ -95,7 +97,7 @@ class MDRNN(nn.Module):
                 final_hidden = row[-1].squeeze(0)
             else:
                 final_hidden = torch.cat((final_hidden, row[-1].squeeze(0)), 1)
-        return self.output(final_hidden)
+        return  F.log_softmax(self.output(final_hidden), dim=1)
         
 
 if __name__ == '__main__':
