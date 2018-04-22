@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
-from rnn import MDGRU
+from rnn import MDGRU, MDLSTM
 
 use_cuda = torch.cuda.is_available()
 
@@ -25,11 +25,14 @@ class RNN(nn.Module):
         self.hidden_size = hidden_size
         self.rnn_type = rnn_type
         if rnn_type == 'gru':
-            self.rnn = MDGRU(input_size, hidden_size, layer_norm)
+            self.rnn = MDGRU(input_size, 
+                             hidden_size, 
+                             layer_norm=layer_norm)
         elif rnn_type =='lstm':
-            self.rnn = nn.LSTM(input_size, 
-                               hidden_size, 
-                               dropout=dropout)
+            self.rnn = MDLSTM(input_size, 
+                              hidden_size, 
+                              dropout=dropout,
+                              layer_norm=layer_norm)
         else:
             print('Unexpected rnn type')
             exit()
@@ -80,7 +83,7 @@ class MDRNN(nn.Module):
         # 2d case, we need general case?
         grid = 4
         x_ori, x_stop, x_steps = [0, 0, n-1, n-1], [n-(grid-1), n-(grid-1), (grid-1), (grid-1)], [1, 1, -1, -1]
-        y_ori, y_stop, y_steps = [0, n-1, 0, n-1], [(grid-1), n-(grid-1), (grid-1), n-(grid-1)], [1, -1, 1, -1]
+        y_ori, y_stop, y_steps = [0, n-1, 0, n-1], [n-(grid-1), (grid-1), n-(grid-1), (grid-1)], [1, -1, 1, -1]
         for axis_idx, rnn in enumerate(self.rnns):
             last_row = []
             for i in range(y_ori[axis_idx], y_stop[axis_idx], y_steps[axis_idx]):

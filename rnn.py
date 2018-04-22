@@ -1,5 +1,8 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from torch import Tensor
+from torch.autograd import Variable
 import math
 
 class MDGRUCell(nn.GRUCell):
@@ -122,6 +125,9 @@ class MDGRU(nn.Module):
         return y, h
 
 '''
+--------- lstm ------------
+'''
+
 class LSTM(nn.Module):
 
     """
@@ -145,20 +151,57 @@ class LSTM(nn.Module):
         self.dropout = dropout
         self.i2h = nn.Linear(input_size, 4 * hidden_size, bias=bias)
         self.h2h = nn.Linear(hidden_size, 4 * hidden_size, bias=bias)
+        self.h2h2 = nn.Linear(hidden_size, 4 * hidden_size, bias=bias)
         self.reset_parameters()
         assert(dropout_method.lower() in ['pytorch', 'gal', 'moon', 'semeniuta'])
         self.dropout_method = dropout_method
 
     def sample_mask(self):
         keep = 1.0 - self.dropout
-        self.mask = V(th.bernoulli(T(1, self.hidden_size).fill_(keep)))
+        self.mask = Variable(torch.bernoulli(Tensor(1, self.hidden_size).fill_(keep)))
 
     def reset_parameters(self):
         std = 1.0 / math.sqrt(self.hidden_size)
         for w in self.parameters():
             w.data.uniform_(-std, std)
 
-class LayerNormLSTM(LSTM):
+class LayerNorm(nn.Module):
+    """
+    Layer Normalization based on Ba & al.:
+    'Layer Normalization'
+    https://arxiv.org/pdf/1607.06450.pdf
+    """
+
+    def __init__(self, input_size, learnable=True, epsilon=1e-6):
+        super(LayerNorm, self).__init__()
+        self.input_size = input_size
+        self.learnable = learnable
+        self.alpha = Tensor(1, input_size).fill_(0)
+        self.beta = Tensor(1, input_size).fill_(0)
+        self.epsilon = epsilon
+        # Wrap as parameters if necessary
+        if learnable:
+            W = nn.Parameter
+        else:
+            W = Variable
+        self.alpha = W(self.alpha)
+        self.beta = W(self.beta)
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        std = 1.0 / math.sqrt(self.input_size)
+        for w in self.parameters():
+            w.data.uniform_(-std, std)
+
+    def forward(self, x):
+        size = x.size()
+        x = x.view(x.size(0), -1)
+        x = (x - torch.mean(x, 1).unsqueeze(1).expand_as(x)) / torch.sqrt(torch.var(x, 1).unsqueeze(1).expand_as(x) + self.epsilon)
+        if self.learnable:
+            x =  self.alpha.expand_as(x) * x + self.beta.expand_as(x)
+        return x.view(size)
+
+class MDLSTM(LSTM):
 
     """
     Layer Normalization LSTM, based on Ba & al.:
@@ -169,63 +212,80 @@ class LayerNormLSTM(LSTM):
         learnable: whether the LN alpha & gamma should be used.
     """
 
-    def __init__(self, input_size, hidden_size, bias=True, dropout=0.0, 
-                 dropout_method='pytorch', ln_preact=True, learnable=True):
-        super(LayerNormLSTM, self).__init__(input_size=input_size, 
+    def __init__(self, 
+                 input_size, 
+                 hidden_size, 
+                 bias=True, 
+                 dropout=0.0, 
+                 dropout_method='pytorch', 
+                 layer_norm=False,
+                 ln_preact=False, 
+                 learnable=True):
+        super(MDLSTM, self).__init__(input_size=input_size, 
                                             hidden_size=hidden_size, 
                                             bias=bias,
                                             dropout=dropout,
                                             dropout_method=dropout_method)
-        if ln_preact:
+        self.layer_norm = layer_norm
+        self.ln_preact = ln_preact
+        if layer_norm:
+            self.ln_cell = LayerNorm(hidden_size, learnable=learnable)
+        if layer_norm and ln_preact:
             self.ln_i2h = LayerNorm(4*hidden_size, learnable=learnable)
             self.ln_h2h = LayerNorm(4*hidden_size, learnable=learnable)
-        self.ln_preact = ln_preact
-        self.ln_cell = LayerNorm(hidden_size, learnable=learnable)
+            self.ln_h2h2 = LayerNorm(4*hidden_size, learnable=learnable)
 
-    def forward(self, x, hidden):
+    def forward(self, x, hidden, hidden2):
         do_dropout = self.training and self.dropout > 0.0
         h, c = hidden
+        h2, c2 = hidden2
+
         h = h.view(h.size(1), -1)
         c = c.view(c.size(1), -1)
+        h2 = h2.view(h2.size(1), -1)
+        c2 = c2.view(c2.size(1), -1)
         x = x.view(x.size(1), -1)
 
         # Linear mappings
         i2h = self.i2h(x)
         h2h = self.h2h(h)
-        if self.ln_preact:
+        h2h2 = self.h2h2(h2)
+        if self.layer_norm and self.ln_preact:
             i2h = self.ln_i2h(i2h)
             h2h = self.ln_h2h(h2h)
-        preact = i2h + h2h
+            h2h2 = self.ln_h2h2(h2h2)
+        preact = i2h + h2h + h2h2
 
         # activations
-        gates = preact[:, :3 * self.hidden_size].sigmoid()
-        g_t = preact[:, 3 * self.hidden_size:].tanh()
+        gates = preact[:, :2 * self.hidden_size].sigmoid()
         i_t = gates[:, :self.hidden_size] 
-        f_t = gates[:, self.hidden_size:2 * self.hidden_size]
         o_t = gates[:, -self.hidden_size:]
+        f_t = (i2h + h2h)[:, 2 * self.hidden_size:3 * self.hidden_size].sigmoid()
+        f_t2 = (i2h + h2h2)[:, 2 * self.hidden_size:3 * self.hidden_size].sigmoid()
+        g_t = preact[:, 3 * self.hidden_size:].tanh()
 
         # cell computations
         if do_dropout and self.dropout_method == 'semeniuta':
             g_t = F.dropout(g_t, p=self.dropout, training=self.training)
 
-        c_t = th.mul(c, f_t) + th.mul(i_t, g_t)
+        c_t = torch.mul(c, f_t) + torch.mul(c2, f_t2) + torch.mul(i_t, g_t)
 
         if do_dropout and self.dropout_method == 'moon':
-                c_t.data.set_(th.mul(c_t, self.mask).data)
-                c_t.data *= 1.0/(1.0 - self.dropout)
-
-        c_t = self.ln_cell(c_t)
-        h_t = th.mul(o_t, c_t.tanh())
+            c_t.data.set_(torch.mul(c_t, self.mask).data)
+            c_t.data *= 1.0/(1.0 - self.dropout)
+        
+        if self.layer_norm:
+            c_t = self.ln_cell(c_t)
+        h_t = torch.mul(o_t, c_t.tanh())
 
         # Reshape for compatibility
         if do_dropout:
             if self.dropout_method == 'pytorch':
                 F.dropout(h_t, p=self.dropout, training=self.training, inplace=True)
             if self.dropout_method == 'gal':
-                    h_t.data.set_(th.mul(h_t, self.mask).data)
+                    h_t.data.set_(torch.mul(h_t, self.mask).data)
                     h_t.data *= 1.0/(1.0 - self.dropout)
 
         h_t = h_t.view(1, h_t.size(0), -1)
         c_t = c_t.view(1, c_t.size(0), -1)
         return h_t, (h_t, c_t)
-'''
