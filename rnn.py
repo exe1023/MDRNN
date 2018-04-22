@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import math
 
 class MDGRUCell(nn.GRUCell):
     def __init__(self, input_size, hidden_size, layer_norm=False, bias=True):
@@ -21,14 +22,14 @@ class MDGRUCell(nn.GRUCell):
             self.gamma_hh2 = nn.Parameter(torch.ones(3 * self.hidden_size))
             self.eps = 0
         self.reset_parameters()
-
+    
     def _layer_norm_x(self, x, g, b):
-        mean = x.mean(1).expand_as(x)
-        std = x.std(1).expand_as(x)
+        mean = x.mean(1).unsqueeze(1).expand_as(x)
+        std = x.std(1).unsqueeze(1).expand_as(x)
         return g.expand_as(x) * ((x - mean) / (std + self.eps)) + b.expand_as(x)
 
     def _layer_norm_h(self, x, g, b):
-        mean = x.mean(1).expand_as(x)
+        mean = x.mean(1).unsqueeze(1).expand_as(x)
         return g.expand_as(x) * (x - mean) + b.expand_as(x)
 
     def forward(self, x, h, h2):
@@ -36,7 +37,7 @@ class MDGRUCell(nn.GRUCell):
             ih_rz = self._layer_norm_x(
                 torch.mm(x, self.weight_ih[:4*self.hidden_size, :].transpose(0, 1)),
                 self.gamma_ih[:4*self.hidden_size],
-                self.bias_ih.narrow[:4*self.hidden_size]
+                self.bias_ih[:4*self.hidden_size]
                 )
 
             hh_rz = self._layer_norm_h(
@@ -51,7 +52,7 @@ class MDGRUCell(nn.GRUCell):
                 self.bias_hh2[2*self.hidden_size]
                 )
         else:
-            #print(h.shape, self.weight_hh.shape)
+            #print(x.shape, self.weight_hh.shape)
             ih_rz = torch.mm(x, self.weight_ih[:4*self.hidden_size, :].transpose(0, 1))
             hh_rz = torch.mm(h, self.weight_hh[:2*self.hidden_size, :].transpose(0, 1))
             hh_rz2 = torch.mm(h2, self.weight_hh2[:2*self.hidden_size, :].transpose(0, 1))

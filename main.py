@@ -19,8 +19,10 @@ use_cuda = torch.cuda.is_available()
 
 if __name__ == '__main__':
     train_loader, test_loader = mnist(args.batch_size)
-    mdrnn = MDRNN(axis=1)
-    optimizer = optim.Adam(mdrnn.parameters(), lr=1e-4)
+    mdrnn = MDRNN(layer_norm=args.layer_norm,
+                  axis=1, 
+                  rnn_type=args.rnn_type)
+    optimizer = optim.Adam(mdrnn.parameters(), lr=1e-3)
     # training
     if use_cuda:
         mdrnn = mdrnn.cuda()
@@ -35,7 +37,6 @@ if __name__ == '__main__':
             loss = F.nll_loss(output, target)
 
             optimizer.zero_grad()
-            nn.utils.clip_grad_norm(mdrnn.parameters(), 1)
             loss.backward()
             optimizer.step()
             if batch_idx % args.log_freq == 0:
